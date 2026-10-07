@@ -1,0 +1,27 @@
+# ===== 大体积样本 / 提取物（不入库）=====
+apk/
+*.apk
+*.jadx
+
+# ===== IDA 数据库与工作副本（可由 .so 重新生成）=====
+*.i64
+*.idb
+
+# ===== unidbg 源码树（外部 checkout，环境见 docs 第 10 节）=====
+unidbg-src/
+
+# ===== runner 构建产物 =====
+unidbg/runner/target/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+
+# ===== out/ 为本地工作目录（证据/日志/抓包），整体不入库 =====
+out/
+
+# ===== 工作区工具配置 =====
+.zcodeignore
+
+# ===== 本地凭据副本（含真实会话头，禁止入库）=====
+checkid.local.py

@@ -1,0 +1,27 @@
+Name:	com.zhihu.android
+Umask:	0077
+State:	S (sleeping)
+Tgid:	20154
+Pid:	20154
+PPid:	1
+TracerPid:	0
+Uid:	u0_a54	u0_a54	u0_a54	u0_a54
+Gid:	u0_a54	u0_a54	u0_a54	u0_a54
+FDSize:	256
+Groups:	3003 9997 20154 50154
+VmPeak:	 4096000 kB
+VmSize:	 3812544 kB
+VmLck:	       0 kB
+VmRSS:	  184320 kB
+Threads:	42
+SigQ:	0/9400
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000001204
+SigIgn:	0000000000001000
+SigCgt:	00000001800044e8
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+Seccomp:	0

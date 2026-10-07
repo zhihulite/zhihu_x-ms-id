@@ -1,0 +1,201 @@
+diff --git a/pom.xml b/pom.xml
+index 1a36cb7..670a116 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -91,14 +91,8 @@
+                 <configuration>
+                     <additionalparam>-Xdoclint:none</additionalparam>
+                     <source>8</source>
++                    <skip>true</skip>
+                 </configuration>
+-                <executions>
+-                    <execution>
+-                        <goals>
+-                            <goal>jar</goal>
+-                        </goals>
+-                    </execution>
+-                </executions>
+             </plugin>
+             <plugin>
+                 <groupId>org.apache.maven.plugins</groupId>
+diff --git a/unidbg-android/src/main/java/com/github/unidbg/linux/ARM64SyscallHandler.java b/unidbg-android/src/main/java/com/github/unidbg/linux/ARM64SyscallHandler.java
+index f6138d1..3bbe3f0 100644
+--- a/unidbg-android/src/main/java/com/github/unidbg/linux/ARM64SyscallHandler.java
++++ b/unidbg-android/src/main/java/com/github/unidbg/linux/ARM64SyscallHandler.java
+@@ -53,6 +53,7 @@ import java.util.concurrent.TimeUnit;
+  * <a href="http://androidxref.com/6.0.0_r5/xref/external/kernel-headers/original/uapi/asm-generic/unistd.h">unistd</a>
+  */
+ public class ARM64SyscallHandler extends AndroidSyscallHandler {
++    private static int duSigactionTicks = 0;   // PATCHED
+ 
+     private static final Logger log = LoggerFactory.getLogger(ARM64SyscallHandler.class);
+ 
+@@ -207,6 +208,12 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
+                     return;
+                 }
+                 case 134:
++                    // PATCHED: bound the libdu.so worker daemon loop (sigaction timer
++                    // ticks); after 60 ticks during the jobs phase, kill it gracefully.
++                    if ("jobs".equals(System.getProperty("du.phase", ""))
++                            && ++duSigactionTicks > 60) {
++                        throw new com.github.unidbg.arm.backend.BackendException("worker bounded");
++                    }
+                     backend.reg_write(Arm64Const.UC_ARM64_REG_X0, sigaction(emulator));
+                     return;
+                 case 72:
+@@ -1055,18 +1062,19 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
+                         fdMap.put(fd, new UdpSocket(emulator));
+                         return fd;
+                     case SocketIO.SOCK_RAW:
+-                        throw new UnsupportedOperationException();
++                        fd = getMinFd();   // PATCHED: raw socket emulated as TcpSocket
++                        fdMap.put(fd, new TcpSocket(emulator));
++                        return fd;
+                 }
+                 break;
+             case SocketIO.AF_NETLINK:
+                 switch (type) {
+                     case SocketIO.SOCK_DGRAM:
++                    case SocketIO.SOCK_RAW:   // PATCHED: rtnetlink raw emulated
++                    default:
+                         fd = getMinFd();
+                         fdMap.put(fd, new NetLinkSocket(emulator));
+                         return fd;
+-                    case SocketIO.SOCK_RAW:
+-                    default:
+-                        throw new UnsupportedOperationException();
+                 }
+         }
+         log.info("socket domain={}, type={}, protocol={}", domain, type, protocol);
+@@ -1416,9 +1424,17 @@ public class ARM64SyscallHandler extends AndroidSyscallHandler {
+         Pointer pathname_p = context.getPointerArg(1);
+         int oflags = context.getIntArg(2);
+         int mode = context.getIntArg(3);
+-        String pathname = pathname_p.getString(0);
++        String pathname = pathname_p == null ? null : pathname_p.getString(0); // PATCHED: null guard
+         log.debug("openat dirfd={}, pathname={}, oflags=0x{}, mode={}", dirfd, pathname, Integer.toHexString(oflags), Integer.toHexString(mode));
++        if (pathname == null) { // PATCHED: treat null path as ENOENT instead of NPE
++            emulator.getMemory().setErrno(UnixEmulator.ENOENT);
++            return -UnixEmulator.ENOENT;
++        }
+         pathname = FilenameUtils.normalize(pathname, true);
++        if (pathname == null) { // PATCHED: normalize can return null -> ENOENT
++            emulator.getMemory().setErrno(UnixEmulator.ENOENT);
++            return -UnixEmulator.ENOENT;
++        }
+         if ("/data/misc/zoneinfo/current/tzdata".equals(pathname) || "/dev/pmsg0".equals(pathname)) {
+             emulator.getMemory().setErrno(UnixEmulator.ENOENT);
+             return -UnixEmulator.ENOENT;
+diff --git a/unidbg-android/src/main/java/com/github/unidbg/linux/android/dvm/DalvikVM64.java b/unidbg-android/src/main/java/com/github/unidbg/linux/android/dvm/DalvikVM64.java
+index 6a0b94a..451fa99 100644
+--- a/unidbg-android/src/main/java/com/github/unidbg/linux/android/dvm/DalvikVM64.java
++++ b/unidbg-android/src/main/java/com/github/unidbg/linux/android/dvm/DalvikVM64.java
+@@ -1005,7 +1005,8 @@ public class DalvikVM64 extends BaseVM implements VM {
+         Pointer _CallDoubleMethodV = svcMemory.registerSvc(new Arm64Svc() {
+             @Override
+             public long handle(Emulator<?> emulator) {
+-                throw new UnsupportedOperationException();
++                // PATCHED for libdu.so: return double 0.0 instead of unsupported
++                return 0;
+             }
+         });
+ 
+diff --git a/unidbg-android/src/main/java/com/github/unidbg/linux/file/NetLinkSocket.java b/unidbg-android/src/main/java/com/github/unidbg/linux/file/NetLinkSocket.java
+index c807922..65460b0 100644
+--- a/unidbg-android/src/main/java/com/github/unidbg/linux/file/NetLinkSocket.java
++++ b/unidbg-android/src/main/java/com/github/unidbg/linux/file/NetLinkSocket.java
+@@ -137,52 +137,57 @@ public class NetLinkSocket extends SocketIO implements FileIO {
+                 throw new IllegalStateException(e);
+             }
+         }
+-        throw new UnsupportedOperationException("buffer=" + buffer + ", count=" + count + ", netlinkType=0x" + Integer.toHexString(netlinkType));
++        // PATCHED: graceful EOF instead of throw - lets the app's poll loop exit
++        return 0;
+     }
+ 
+     @Override
+     protected int getTcpNoDelay() {
+-        throw new UnsupportedOperationException(getClass().getName());
++        // PATCHED: benign no-op for libdu.so
++        return 0;
+     }
+ 
+     @Override
+     protected void setTcpNoDelay(int tcpNoDelay) {
+-        throw new UnsupportedOperationException(getClass().getName());
++        // PATCHED: no-op
+     }
+ 
+     @Override
+     protected void setReuseAddress(int reuseAddress) {
+-        throw new UnsupportedOperationException(getClass().getName());
++        // PATCHED: no-op
+     }
+ 
+     @Override
+     protected void setKeepAlive(int keepAlive) {
+-        throw new UnsupportedOperationException(getClass().getName());
++        // PATCHED: no-op
+     }
+ 
+     @Override
+-    protected void setSendBufferSize(int size) {
+-        throw new UnsupportedOperationException(getClass().getName());
++    protected void setSendBufferSize(int keepAlive) {
++        // PATCHED: benign no-op for libdu.so
+     }
+ 
+     @Override
+-    protected void setReceiveBufferSize(int size) {
+-        throw new UnsupportedOperationException(getClass().getName());
++    protected void setReceiveBufferSize(int keepAlive) {
++        // PATCHED: benign no-op for libdu.so
+     }
+ 
+     @Override
+     protected InetSocketAddress getLocalSocketAddress() {
+-        throw new UnsupportedOperationException(getClass().getName());
++        // PATCHED: benign no-op for libdu.so
++        return new InetSocketAddress(0);
+     }
+ 
+     @Override
+     protected int connect_ipv6(Pointer addr, int addrlen) {
+-        throw new UnsupportedOperationException(getClass().getName());
++        // PATCHED: benign no-op for libdu.so
++        return 0;
+     }
+ 
+     @Override
+     protected int connect_ipv4(Pointer addr, int addrlen) {
+-        throw new UnsupportedOperationException(getClass().getName());
++        // PATCHED: benign no-op for libdu.so
++        return 0;
+     }
+ 
+     @Override
+diff --git a/unidbg-api/src/main/java/com/github/unidbg/unix/UnixSyscallHandler.java b/unidbg-api/src/main/java/com/github/unidbg/unix/UnixSyscallHandler.java
+index 4bd7df4..7b33404 100644
+--- a/unidbg-api/src/main/java/com/github/unidbg/unix/UnixSyscallHandler.java
++++ b/unidbg-api/src/main/java/com/github/unidbg/unix/UnixSyscallHandler.java
+@@ -155,10 +155,16 @@ public abstract class UnixSyscallHandler<T extends NewFileIO> implements Syscall
+         }
+         
+         if (pathname.startsWith("/proc/" + emulator.getPid() + "/fd/") || pathname.startsWith("/proc/self/fd/")) {
+-            int fd = Integer.parseInt(pathname.substring(pathname.lastIndexOf("/") + 1));
+-            T file = fdMap.get(fd);
+-            if (file != null) {
+-                return FileResult.success(file);
++            // 路径以 '/' 结尾（即 /proc/self/fd/ 这个目录本身）时切出来是空串，直接
++            // parseInt("") 会抛 NumberFormatException；该异常会从 syscall handler 抛出去
++            // 把整个 emulation 打断（实测 SDK stat 这个目录时必崩）。空串直接跳过。
++            String suffix = pathname.substring(pathname.lastIndexOf("/") + 1);
++            if (!suffix.isEmpty()) {
++                int fd = Integer.parseInt(suffix);
++                T file = fdMap.get(fd);
++                if (file != null) {
++                    return FileResult.success(file);
++                }
+             }
+         }
+         if (("/proc/" + emulator.getPid() + "/fd").equals(pathname) || "/proc/self/fd".equals(pathname)) {
